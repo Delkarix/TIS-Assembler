@@ -1,0 +1,130 @@
+NIL		000
+A		001
+B		010
+C		011
+D		100
+STACK		101	-> Moving to STACK pushes, moving from STACK pops
+LITERAL8	110	-> Designates that 1 byte is specified after and used as an immediate value
+LITERAL16	111	-> Designates that 2 bytes are specified after and used as an immediate value
+
+
+2 bit Opcode		3 bits REG1/extended opcode		3 bits REG2		[optional 2 bytes]
+
+25 instructions total
+Opcode:
+	00: Arithmetic
+		Extension:
+			000: Add
+			001: Sub
+			010: Mul
+			011: Div
+			100: Mod
+			101: SLL
+			110: SRL
+			111: NOT
+
+	01: Logistic (MOV)
+		Copies value of REG2 into REG1
+
+	10: Control Switch (JMP)
+		Extension:
+			All of these require an extra 2 bytes but can use register
+			Labels are converted to relative markers
+			Literals are interpreted as relative
+			CALL stores the address of the next PC as an immediate in STACK rather than a relative
+			For JMP, when STACK is used as the target, immediate branching is used rather than relative as usual.
+
+			000: JMP	If a register other than 111 is used, the 2-byte intermediate value is omitted.
+			001: JE		For JE, JNE, JG, JL, and JLE, REG2 is compared to ACC and jumped according to condition
+			010: JNE
+			011: JG
+			100: JL
+			101: JGE
+			110: JLE
+			111: CALL	Computes the next PC, stores it in STACK, and jumps to the specified address
+
+	11: Other
+		Extension
+			000: AND
+			001: OR
+			010: XOR
+			011: LOAD8	Reads 1 byte from the address specified in REG2 and writes it to A
+			100: LOAD16	Reads 2 bytes from the address specified in REG2 and writes it to A
+			101: STORE8	Writes the lower byte of A to the address specified in the REG2
+			110: STORE16	Writes the value of A to the address specified in the REG2
+			111: SYSCALL	Allows the CPU to access external resources
+
+			
+Pseudo instructions:
+	NOP		->	ADD NIL		(00000000)
+
+	RET		->	JMP STACK	(10000101)
+
+For literals, 110 or 111 is chosen based on the size of the literal (i.e. 1 byte for -128 - 127, 2 bytes for -32768 - 32767)
+For labels, 2 bytes is always used.
+Labels and jumps are always relative.
+
+GRAMMAR:
+	Program := StatementList
+	StatementList := PreprocessorInstructionLabel [Comment] \n StatementList | E
+		-> or potentially just List<PreprocessorInstructionLabel> depending on parsing strategy
+	PreprocessorInstructionLabel := Preprocessor | Instruction | Label
+	Label := ":" ALPHANUMERIC_IDENTIFIER
+	Preprocessor := "." ALPHANUMERIC_IDENTIFIER PreprocessorPost
+	PreprocessorPost := ALPHANUMERIC_IDENTIFIER | NUMBER | Label
+	Comment := # ASCII_EXCLUDE_NEWLINE
+	Instruction := Arithmetic | Logistic | ControlSwitch | Other
+	Arithmetic := ARITHMETIC_OPCODES Argument
+	Argument := Register | Label | Literal
+	Logistic := "MOV" Register "," Argument
+	ControlSwitch := CONTROL_SWITCH_OPCODES Argument "," Label | "JMP"
+	Other := OTHER_OPCODES Argument | "SYSCALL" (Register | Literal)
+
+SYSCALLS:
+	0: HALT			=>	Stops the program
+	1: READ_CHAR		=>	Reads a keyboard press and sets A to the ASCII value (ENTER = 0xA)
+	2: WRITE_CHAR		=>	Writes the value in A as an ASCII character to the emulator's STDOUT
+	3: LOAD_FILE		=>	Opens a file with the name specified as a zero-terminated string pointed to by A and loads the contents into the memory specified by
+	4: EXTERNAL_CALL	=>	Calls an emulator-defined function with index A and args supplied from the STACK in reverse push-order
+	5: MALLOC		=>	Allocates a block of memory based on a bytesize specifies in A and sets A to the pointer to the start of the block
+	6: FREE			=>	Frees the block of memory based on the address specified in A
+
+
+EXAMPLE: Sqrt Algorithm
+; sqrt(x) =>    x_n+1 = (x + a/x)/2
+; Assume input and output goes through register A. Iterations is in register B.
+
+.PUBLIC
+:SQRT
+MOV C, A		; Save A to C
+MOV D, A		; Save the original A
+
+:LOOP
+MOV A, D		; D = original A, set A to the original A
+DIV C			; A = a/x_n
+ADD C			; A = x_n + a/x_n
+DIV 2			; A = (x_n + a/x_n)/2
+
+MOV C, A		; x_n+1 = (x_n + a/x_n)/2.
+MOV A, B		; A = counter
+SUB 1			; counter--
+MOV B, A		; save counter
+JG NIL, :LOOP		; Go back to the start of the loop if count > 0
+
+MOV A, C		; Move the result back to A
+RET
+
+
+
+ASSEMBLED:
+
+PROBABLY NEED TO ADJUST
+
+START (0x0):
+01011001 01100001
+LOOP (0x3):
+01001100 00011011 00000011 00011110 [00000010]
+01011001 01001010 00001111 [00000001] 01010001 10011000 [11111111 11110110]
+01001011 10000101
+
+Code size: 17 bytes
