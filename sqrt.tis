@@ -1,0 +1,19 @@
+.PUBLIC
+:SQRT
+    MOV C, A		# Save A to C
+    MOV D, A		# Save the original A
+
+    :LOOP
+        MOV A, D		# D = original A, set A to the original A
+        DIV C			# A = a/x_n
+        ADD C			# A = x_n + a/x_n
+        SRL 1			# A = (x_n + a/x_n)/2
+
+        MOV C, A		# x_n+1 = (x_n + a/x_n)/2.
+        MOV A, B		# A = counter
+        SUB 1			# counter--
+        MOV B, A		# save counter
+        JG NIL, :LOOP	# Go back to the start of the loop if count > 0
+
+    MOV A, C		# Move the result back to A
+    JMP STACK

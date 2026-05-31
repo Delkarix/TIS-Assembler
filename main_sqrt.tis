@@ -1,0 +1,5 @@
+.PUBLIC :MAIN
+    MOV A, 12345
+    MOV B, 10
+    CALL :SQRT
+    #JMP -1
