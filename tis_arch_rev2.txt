@@ -1,0 +1,481 @@
+NULL		0000
+A0		0001
+A1		0010
+A2		0011
+A3		0100
+T0		0101
+T1		0110
+T2		0111
+T3		1000
+S0		1001
+S1		1010
+S2		1011
+S3		1100
+GP		1101
+STACK		1110
+PC		1111
+
+
+REGISTER ALLOCATION:
+	A0-A3 and T0-T3 are temp variables and thus must be preserved by the caller.
+	S0-S3 and GP are storage variables and thus must be saved and restored by the callee
+
+	STACK can be used for temporary storage and assembler temporaries and macros
+
+	All registers are 16-bit
+
+
+GENERAL INSTRUCTION FORMAT:
+	[1 byte instruction]
+		2 bit Opcode		3 bits extended opcode (func)		3 bit REG_FIELD_TYPE	
+
+	[2 byte REG_FIELD]
+		4 bit DEST_REG		4 bit REG1	4 bit REG2	4 bit MULT_OFFSET
+
+
+LOAD_IMM16 FORMAT:
+	[1 byte instruction]
+		2 bit Opcode (01)	2 bits extended opcode (11)	4 bit DEST_REG	
+
+	[2 byte LITERAL]
+
+
+SYSCALL INSTRUCTION FORMAT
+	[1 byte instruction]
+		2 bit Opcode (10)	2 bits extended opcode (10)	4 bit CALL_ID
+
+	[2 byte LITERAL]
+		OR
+	[2 byte REG_FIELD]
+		4 bit REG1		4 bit REG2	4 bit REG3	4 bit REG4
+
+CALL_EX INSTRUCTION FORMAT
+	[1 byte instruction]
+		2 bit Opcode (11)	6 bits FUNCTION_INDEX
+
+	[2 byte LITERAL]
+		OR
+	[2 byte REG_FIELD]
+		4 bit REG1		4 bit REG2	4 bit REG3	4 bit REG4
+
+
+CMP INSTRUCTION FORMAT
+	[1 byte instruction]
+		2 bit Opcode (10)	2 bits comparison operator (func)	4 bit DEST_REG
+
+	[2 byte REG_FIELD]
+		4 bit COMP_REG1		4 bit COMP_REG2		4 bit SELECTION_REG1	4 bit SELECTION_REG2
+
+	CMP~ DEST_REG, COMP_REG1, COMP_REG2, SELECTION_REG1, SELECTION_REG2:
+		if (COMP_REG1 ~ COMP_REG2) {
+			DEST_REG = SELECTION_REG1;
+		}
+		else {
+			DEST_REG = SELECTION_REG2;
+		}
+
+FMULADD INSTRUCTION FORMAT
+	[1 byte instruction]
+		2 bit Opcode (11)	3 bits extended opcode (111)	1 bit CONVERSION	2 bit SELECTOR
+
+	[2 byte REG_FIELD]
+		4 bit DEST_REG		4 bit REG1	4 bit REG2	4 bit REG3
+
+
+
+
+All data is 24-bit (3 byte) aligned
+
+19 base instructions total
+
+Opcode:
+	00: Arithmetic
+		Extension:
+			000: ADD		=>	Adds the data in REG_FIELD together and stores it in DEST_REG. If REG_FIELD_TYPE = 1, DEST_REG += LITERAL
+			001: MUL		=>
+			010: DIV
+			011: MOD
+			100: AND
+			101: OR
+			110: XOR
+			111: FMULADD		=>	Floating Point Fused Multiply-Add
+							Can perform the majority of common floating-point operations.
+							SELECTOR bits[1,0] correspond to REG2, and REG3.
+							If the corresponding bit is set, the reciprocal of the register is used. Otherwise, the register's original value is used. If the register is NULL, `1 is substituted.
+
+							If the CONVERSION bit is set, the result will be converted to an integer before being stored in DEST_REG
+			
+
+	01: Logistic
+		Extension:
+			000: LOAD8		=>	DEST_REG = REG1 ~ REG2 :=	DEST_REG = *(REG1 + REG2)
+				=> 	Loads 1 byte of data from the address specified by DEST_REG.
+					If REG_FIELD_TYPE = 0, the address is specified by [REG1 + REG2*OFFSET].
+					If REG_FIELD_TYPE = 1, the address is specified by the relative 
+			001: LOAD16
+			010: STORE8		=>	DEST_REG = REG1 ~ REG2	:=	*(REG1 + REG2) = DEST_REG
+			011: STORE16
+			10x: ???
+			11x: LOAD_IMM16		=> Extra bit is used as 4th bit for DEST_REG
+
+	10: Comparison (CMP)
+		Extension:
+			00: == (CMPE)		=> Sets DEST_REG to SELECTION_REG1 if COMP_REG1 == COMP_REG2 and SELECTION_REG2 if COMP_REG1 != COMP_REG2
+			01: <  (CMPGU)		=> Sets DEST_REG to SELECTION_REG1 if unsigned COMP_REG1 < unsigned COMP_REG2 and SELECTION_REG2 if unsigned COMP_REG1 >= unsigned COMP_REG2
+			10: <  (CMPG)		=> Sets DEST_REG to SELECTION_REG1 if signed COMP_REG1 < signed COMP_REG2 and SELECTION_REG2 if signed COMP_REG1 >= signed COMP_REG2
+			11: FP < (FCMPG)	=> Compares COMP_REG1 and COMP_REG2 via < floating-point operations
+				
+
+
+	11: System Call (SYSCALL)
+		Allows the CPU to access external (OS emulator) resources
+		xxxxxx: FUNCTION_INDEX		=> Specifies the index of the predefined host function defined in the emulator's function table, with the arguments specified by REG1, REG2, REG3, and REG4.
+
+
+
+		
+
+REG_FIELD_TYPE:
+	x00	=>	DEST_REG = REG1 ~ REG2(MULT_OFFSET)
+	x01	=>	DEST_REG = REG1 ~ -REG2(MULT_OFFSET)
+	x10	=>	REG2 and MULT_OFFSET make up a 8-bit value, and DEST_REG = REG1 ~ LITERAL
+	x11	=>	REG1, REG2, and MULT_OFFSET make up a 12-bit value, and DEST_REG ~= LITERAL
+
+	0xx	=>	MULT_OFFSET/LITERAL is unsigned
+	1xx	=>	MULT_OFFSET/LITERAL is signed
+
+MULT_OFFSET:
+	A 4-bit value to multiply REG2 by before combining it with REG1 (useful for array/struct iteration)
+	The general formula is:
+		DEST_REG = REG1 ~ (REG2 * (-1)^REG_FIELD_TYPE[0] * 2^MULT_OFFSET)
+
+	NOTE: If REG2 == NULL and MULT_OFFSET != 0000, then REG2 == `1 instead
+		So 15:NULL	=>	1 << 15
+
+STACK:
+	Can be used as temp assembler storage.
+	When the STACK is requested more than once in a single instruction, the value is filled in left-to-right.
+	For instance:
+		MOV STACK, `2
+		MOV STACK, `3
+		SUB T0, STACK, STACK
+
+	Would expand to
+		SUB T0, `3, `2
+
+	STACK is only popped when actually read from.
+	For instance:
+		CMPE T3, T0, T1, NULL, STACK
+
+		If T0 == T1, then T3 = 0 and STACK is unaffected.
+		If T0 != T1, then T3 = STACK and the value on top of the STACK is popped.
+
+			
+Pseudo instructions:
+	NOP					=>	ADD NULL, NULL, NULL
+
+	RET					=>	JABS STACK			=>	ADD PC, NULL, STACK
+
+	NOT <DEST_REG>, <REG>			=>	LOAD_IMM16 STACK, 0xFFFF
+							XOR DEST_REG, DEST_REG, STACK
+
+	SUB <DEST_REG>, <REG1>, <REG2>		=>	ADD DEST_REG, REG1, -REG2
+
+	SUBL <DEST_REG>, <REG1>, <LITERAL>	=>	ADD DEST_REG, REG1, -LITERAL
+
+	MOV <DEST_REG>, <SRC_REG>		=>	ADD DEST_REG, NULL, SRC_REG
+
+	MOV <DEST_REG>, <LITERAL>		=>	LOAD_IMM16 DEST_REG, LITERAL
+
+	JREL <REG/RELATIVE_LITERAL>		=>	ADD PC, PC, REG/RELATIVE_LITERAL
+
+	CALL_REL <RELATIVE_LITERAL>		=>	ADD STACK, PC, 6		=>	ADD STACK, PC, 6
+							JREL RELATIVE_LITERAL			ADD PC, PC, RELATIVE_LITERAL
+
+	CALL <ABSOLUTE_LITERAL>			=>	ADD STACK, PC, 6		=>	ADD STACK, PC, 6
+							JABS ABSOLUTE_LITERAL			LOAD_IMM16 PC, ABSOLUTE_LITERAL
+
+	CALL_REL <REG>				=>	ADD STACK, PC, 6		=>	ADD STACK, PC, 6
+							JREL REG				ADD PC, PC, REG
+
+	CALL <REG>				=>	ADD STACK, PC, 6		=>	ADD STACK, PC, 6
+							JABS REG				ADD PC, NULL, REG
+
+	JABS <REG>				=>	MOV PC, REG			=>	ADD PC, NULL, REG
+
+	JABS <ABSOLUTE_LITERAL>			=>	MOV PC, ABSOLUTE_LITERAL	=>	LOAD_IMM16 PC, ABSOLUTE_LITERAL
+
+	SLL <DEST_REG>, <REG>, <LITERAL>	=>	ADD DEST_REG, NULL, LITERAL:REG		(NOTE: -16 < LITERAL < 15 wouldn't be valid anyways)
+
+	SRL <DEST_REG>, <REG>, <LITERAL>	=>	ADD DEST_REG, NULL, -LITERAL:REG
+
+	SLL <DEST_REG>, <REG1>, <REG2>		=>	No Equivalent
+
+	SRL <DEST_REG>, <REG1>, <REG2>		=>	No Equivalent
+
+
+	# NOTE!!!!! The below J* pseudoinstructions (including FJ*) are actually invalid as STACK is only evaluated on use.
+	# They are kept here as reference for ==, !=, <, >, <=, and >=.
+	JE <COMP_REG1>, <COMP_REG2>, <LABEL>	=>	ADD STACK, PC, 9
+							LOAD_IMM16 STACK, LABEL
+							CMPE PC, COMP_REG1, COMP_REG2, STACK, STACK
+
+	JNE <COMP_REG1>, <COMP_REG2>, <LABEL>	=>	LOAD_IMM16 STACK, LABEL
+							ADD STACK, PC, 6
+							CMPE PC, COMP_REG1, COMP_REG2, STACK, STACK
+
+	JGU <COMP_REG1>, <COMP_REG2>, <LABEL>	=>	ADD STACK, PC, 9
+							LOAD_IMM16 STACK, LABEL
+							CMPGU PC, COMP_REG1, COMP_REG2, STACK, STACK
+
+	JLU <COMP_REG1>, <COMP_REG2>, <LABEL>	=>	ADD STACK, PC, 9
+							LOAD_IMM16 STACK, LABEL
+							CMPGU PC, COMP_REG2, COMP_REG1, STACK, STACK
+
+	JGEU <COMP_REG1>, <COMP_REG2>, <LABEL>	=>	LOAD_IMM16 STACK, LABEL
+							ADD STACK, PC, 6
+							CMPGU PC, COMP_REG2, COMP_REG1, STACK, STACK
+
+	JLEU <COMP_REG1>, <COMP_REG2>, <LABEL>	=>	LOAD_IMM16 STACK, LABEL
+							ADD STACK, PC, 6
+							CMPGU PC, COMP_REG1, COMP_REG2, STACK, STACK
+
+	JG <COMP_REG1>, <COMP_REG2>, <LABEL>	=>	ADD STACK, PC, 9
+							LOAD_IMM16 STACK, LABEL
+							CMPG PC, COMP_REG1, COMP_REG2, STACK, STACK
+
+	JL <COMP_REG1>, <COMP_REG2>, <LABEL>	=>	ADD STACK, PC, 9
+							LOAD_IMM16 STACK, LABEL
+							CMPG PC, COMP_REG2, COMP_REG1, STACK, STACK
+
+	JGE <COMP_REG1>, <COMP_REG2>, <LABEL>	=>	LOAD_IMM16 STACK, LABEL
+							ADD STACK, PC, 6
+							CMPG PC, COMP_REG2, COMP_REG1, STACK, STACK
+
+	JLE <COMP_REG1>, <COMP_REG2>, <LABEL>	=>	LOAD_IMM16 STACK, LABEL
+							ADD STACK, PC, 6
+							CMPG PC, COMP_REG1, COMP_REG2, STACK, STACK
+
+	FADD <DEST_REG>, <REG1>, <REG2>		=>	FMULADD DEST_REG, REG1, `1/NULL, REG2
+
+	FSUB <DEST_REG>, <REG1>, <REG2>		=>	XOR DEST_REG, REG2, 15:NULL	=>	XOR DEST_REG, REG2, 15:NULL
+							FADD DEST_REG, REG1, DEST_REG		FMULADD DEST_REG, REG1, `1/NULL, DEST_REG
+
+	MUL <DEST_REG>, <REG1>, <REG2>		=>	FMULADD DEST_REG, REG1, REG2, NULL
+
+	FDIV <DEST_REG>, <REG1>, <REG2>		=>	FMUL DEST_REG, REG1, `1/REG2	=>	FMULADD DEST_REG, REG1, `1/REG2, NULL
+
+
+	FJG <COMP_REG1>, <COMP_REG2>, <LABEL>	=>	ADD STACK, PC, 9
+							LOAD_IMM16 STACK, LABEL
+							FCMPG PC, COMP_REG1, COMP_REG2, STACK, STACK
+
+	FJL <COMP_REG1>, <COMP_REG2>, <LABEL>	=>	ADD STACK, PC, 9
+							LOAD_IMM16 STACK, LABEL
+							FCMPG PC, COMP_REG2, COMP_REG1, STACK, STACK
+
+	FJGE <COMP_REG1>, <COMP_REG2>, <LABEL>	=>	LOAD_IMM16 STACK, LABEL
+							ADD STACK, PC, 6
+							FCMPG PC, COMP_REG2, COMP_REG1, STACK, STACK
+
+	FJLE <COMP_REG1>, <COMP_REG2>, <LABEL>	=>	LOAD_IMM16 STACK, LABEL
+							ADD STACK, PC, 6
+							FCMPG PC, COMP_REG1, COMP_REG2, STACK, STACK
+
+	I_TO_F <DEST_REG>, <REG>		=>	FMULADD DEST_REG, NULL, NULL, (F)REG
+
+	F_TO_I <DEST_REG>, <REG>		=>	FMULADD (I)DEST_REG, NULL, NULL, REG
+
+
+
+GRAMMAR:
+	Program := StatementList
+	StatementList := PreprocessorInstructionLabel [Comment] \n StatementList | E
+		-> or potentially just List<PreprocessorInstructionLabel> depending on parsing strategy
+	PreprocessorInstructionLabel := Preprocessor | Instruction | Label
+	Label := ":" ALPHANUMERIC_IDENTIFIER
+	Preprocessor := "." ALPHANUMERIC_IDENTIFIER PreprocessorPost
+	PreprocessorPost := ALPHANUMERIC_IDENTIFIER | NUMBER | Label
+	Comment := # ASCII_EXCLUDE_NEWLINE
+	Instruction := Arithmetic | Logistic | ControlSwitch | Other
+	Arithmetic := ARITHMETIC_OPCODES Argument
+	Argument := Register | Label | Literal
+	Logistic := "MOV" Register "," Argument
+	ControlSwitch := CONTROL_SWITCH_OPCODES Argument "," Label | "JMP"
+	Other := OTHER_OPCODES Argument | "SYSCALL" (Register | Literal)
+
+
+SYSCALLS:
+	0: HALT			=>	Stops the program
+	1: READ_CHAR		=>	Reads a keyboard press and sets REG1 to the ASCII value (ENTER = 0xA)
+	2: WRITE_CHAR		=>	Writes the value in REG1 as an ASCII character to the emulator's STDOUT
+	3: LOAD_BLOCK		=>	Opens the persistent data storage file and loads a block specified with the index address specified in REG2 and length specified by REG3 into the memory specified by the address specified REG1.
+	4: MALLOC		=>	Allocates a block of memory based on a bytesize specified in REG1 and sets REG1 to the pointer to the start of the block
+	5: FREE			=>	Frees the block of memory based on the address specified in REG1
+	6: RANDOM		=>	Sets REG1 to a random 16-bit integer
+	7: FILL_STACK		=>	Pushes the value in REG1 to the STACK as many times as specified in REG2
+	8: CYCLES		=>	Sets REG1 to the number of cycles that the virtual CPU has completed since activated
+	9: SLEEP		=>	Sleeps the number of milliseconds specified in REG1
+	10: CREATE_THREAD	=>	Creates a new thread that starts at the address specified in REG1. REG1 is set to the thread's ID
+	11: KILL_THREAD		=>	Immediately kills the thread with the ID specified by REG1.
+	12-63: Undefined
+
+PREPROCESSOR INSTRUCTIONS:
+	.PUBLIC <:LABEL>	=>	Marks the subsequent label as being public to the linker
+	.INCLUDE <"file">	=>	Similar to C's #include, directly injects the contents of "file.tis" into the current place in the file.
+	.LINK <"file.tis">	=>	Tells the assembler to assemble and link the given file as well if it hasn't been done so already
+	.EXTERN <:LABEL>	=>	States that a given label is to be linked in later
+	.ZERO <LITERAL>		=>	Statically allocates <LITERAL> bytes equaling 0.
+	.8 <LITERAL>		=>	Statically allocates a single byte with the value LITERAL
+	.16 <LITERAL>		=>	Statically allocates 2 bytes with the value LITERAL
+	.32 <LITERAL>		=>	Statically allocates 4 bytes with the value LITERAL
+	.STRING <"string">	=>	Statically allocates an ASCII string terminated by 0.
+	.8[] { <LITERAL...> }	=>	Hexadecimal array of bytes
+	.16[] { <LITERAL...> }	=>	Hexadecimal array of 16-bit integers
+	.32[] { <LITERAL...> }	=>	Hexadecimal array of 32-bit integers
+	.MACRO <name> <PARAMS, ...> {
+		<INSTRUCTIONS...>
+	}
+		=> 	Defines a macro with a name and parameters that expands to a set of instructions
+			Many macros are defined by default in base.tis
+			
+			Example:
+				.MACRO ADD_AND_PRINT :FORMAT_STR, @REG_ARG, `SOME_LITERAL {
+					ADD A1, @REG_ARG, `SOME_LITERAL
+					MOV A0, :FORMAT_STR
+					CALL :STDIO.PRINTF
+				}
+				...
+
+				ADD_AND_PRINT :PRINT_STR, T0, `2		=>	ADD A1, T0, `2
+											MOV A0, :PRINT_STR
+											CALL :STDIO.PRINTF
+				...
+				:PRINT_STR .STRING "Addition: %d\n"
+
+
+EXAMPLE: Integer Sqrt Algorithm
+
+.LINK "stdio.tis"	# Tells the assembler to assemble stdio.tis and link it if it has not already.
+.EXTERN :STDIO.PRINT_UINT8
+
+.PUBLIC :SQRT
+    # A0 = Number to square root
+    # A1 = Number of iterations
+
+    MOV T0, A0			# Save original A to C
+    LOAD_IMM16 A2, :LOOP
+
+    :LOOP
+	DIV T1, T0, A0		# T1 = a/x_n
+	ADD A0, A0, T1		# A0 = x_n + a/x_n
+	SRL A0, A0, `1		# A0 = (x_n + a/x_n)/2
+
+	SUB A1, A1, `1
+	CMPGU PC, NULL, A1, A2, STACK
+
+.PUBLIC :MAIN
+    MOV A0, `12345
+    MOV A1, `10
+    CALL_REL :SQRT
+    CALL :STDIO.PRINT_UINT8	# Included by stdio.tis
+    SYSCALL 0			# HALT
+
+REDUCED:
+.LINK "stdio.tis"	# Tells the assembler to assemble stdio.tis and link it if it has not already.
+.EXTERN :STDIO.PRINT_UINT8
+
+.PUBLIC :SQRT
+    # A0 = Number to square root
+    # A1 = Number of iterations
+
+    ADD T0, NULL, A0			# Save original A to C
+    LOAD_IMM16 A2, :LOOP
+
+    :LOOP
+	DIV T1, T0, A0		# T1 = a/x_n
+	ADD A0, A0, T1		# A0 = x_n + a/x_n
+	ADD A0, NULL, `-1:A0	# A0 = (x_n + a/x_n)/2
+
+	ADD A1, A1, `-1
+        CMPGU PC, NULL, A1, A2, STACK
+
+.PUBLIC :MAIN
+    LOAD_IMM16 A0, `12345
+    LOAD_IMM16 A1, `10
+
+    ADD STACK, PC, 6
+    ADD PC, PC, <HERE - :SQRT>
+    
+    ADD STACK, PC, 6
+    LOAD_IMM16 PC, :STDIO.PRINT_UINT8
+    SYSCALL 0			# HALT
+
+
+
+
+EXAMPLE: Float16 Sqrt Algorithm
+.LINK "stdio.tis"	# Tells the assembler to assemble stdio.tis and link it if it has not already.
+.EXTERN :STDIO.PRINT_FLOAT16
+
+.PUBLIC :SQRTF16
+    # A0 = Number to square root
+    # A1 = Number of iterations
+
+    LOAD_IMM16 STACK, :LOOP
+    SYSCALL 7, STACK, A1		# FILL_STACK_LITERAL, fill the STACK with 10 instances of LOOP.
+
+    MOV T0, A0				# Save original A to C
+    MOV A1, `63488			# 0b1111100000000000
+
+    :LOOP
+	FMULADD A0, T0, `1/A0, A0		# A0 = a/x_n + x_n
+	ADD A0, A1, `1:A0			# A0 = (a/x_n + x_n)/2. Shift left by 1 to remove the sign bit and sub 1 from the 5-bit exponent. Note that this might overflow into the sign and give a negative result
+	SRL A0, A0, `1				# Restore the sign bit, inadvertently removing the negative sign.
+
+	MOV PC, STACK
+
+.PUBLIC :MAIN
+    MOV A0, `29191	# 12344.0
+    MOV A1, `10
+    CALL_REL :SQRTF16
+    CALL :STDIO.PRINT_FLOAT16	# Included by stdio.tis
+    SYSCALL 0			# HALT
+
+
+
+
+
+EXAMPLE: Add a list of numbers
+.PUBLIC :ADD_8_VEC
+    # A0 = Address of the first array
+    # A1 = Address of the second array
+    # A2 = Address of the output array
+    # A3 = Count
+
+    MOV T2, :LOOP
+
+    # Adds the two arrays in reverse to reduce instructions
+    :LOOP
+	SUB A3, A3, `1
+	LOAD8 T0, A0, A3
+	LOAD8 T1, A1, A3
+	ADD T0, T0, T1
+	STORE8 T0, A2, A3
+
+	CMPGU PC, NULL, A3, T2, STACK
+        
+
+.PUBLIC :MAIN
+    MOV A0, :ARR1
+    MOV A1, :ARR2
+    MOV A2, :ARR3
+    LOAD8 A3, :COUNT
+    CALL_REL :ADD_8_VEC
+    SYSCALL 0
+
+
+:COUNT .8 9
+:ARR1 .8[] { 1, 2, 3, 4, 5, 6, 7, 8, 9 }
+:ARR2 .8[] { 9, 8, 7, 6, 5, 4, 3, 2, 1 }
+:ARR3 .ZERO 9
