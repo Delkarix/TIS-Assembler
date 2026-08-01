@@ -1,70 +1,93 @@
-NULL    0000
-A0      0001
-A1      0010
-A2      0011
-A3      0100
-T0      0101
-T1      0110
-T2      0111
-T3      1000
-S0      1001
-S1      1010
-S2      1011
-S3      1100
-GP      1101
-STACK   1110
-PC      1111
+NULL        00000
+ONE         00001
+TWO         00010
+A0          00011
+FOUR        00100
+A1          00101
+A2          00110
+A3          00111
+EIGHT       01000
+T0          01001
+T1          01010
+T2          01011
+T3          01100
+T4          01101
+T5          01110
+T6          01111
+SIXTEEN     10000
+T7          10001
+S0          10010
+S1          10011
+S2          10100
+S3          10101
+S4          10110
+S5          10111
+S6          11000
+S7          11001
+STACK       11010
+SYSTEM_IO   11011
+ERROR       11100
+ERROR_ADDR  11101
+PC          11110
+NEG_ONE     11111
+
+
 
 
 REGISTER ALLOCATION:
-    A0-A3 and T0-T3 are temp variables and thus must be preserved by the caller.
-    S0-S3 and GP are storage variables and thus must be saved and restored by the callee
+    A0-A3 and T0-T7 are temp variables and thus must be preserved by the caller.
+    S0-S7 and DATA are storage variables and thus must be saved and restored by the callee
 
-    STACK can be used for temporary storage and assembler temporaries and macros
+    STACK can be used for temporary storage, assembler temporaries, and macros
+    
+    NULL, ONE, TWO, FOUR, EIGHT, SIXTEEN, and NEG_ONE always return their hardcoded respective values and cannot be written to.
+    For convenience, the 8-bit integers 0, 1, 2, 4, 8, 16, and -1 (0xFFFFFFFF) are stored at their corresponding addresses in memory
+    (e.g. dereferencing the number 8 will return the number 8).
 
-    All registers are 16-bit
+    ERROR lists an error that is set on certain behavior (e.g. division-by-zero)
+    ERROR_ADDR lists the address this was flagged on.
+
+    SYSTEM_IO is used for system calls to the emulator.
+    The system call ID is first written to SYSTEM_IO and then all arguments are subsequently written.
+    Return values are read from SYSTEM_IO after completion.
+    Attempting to read from SYSTEM_IO before sending all arguments, sending invalid syscalls, or sending incorrect data will flag an ERROR.
+
+    All registers are 32-bit.
+    All instructions are 4 bytes wide and 32-bit aligned.
 
 
 GENERAL INSTRUCTION FORMAT:
-    [1 byte instruction]
-        2 bit Opcode        3 bits extended opcode (func)        3 bit REG_FIELD_TYPE    
+        1 bit Opcode (0)        3 bits extended opcode (func)        1 bit USE_LITERAL
 
-    [2 byte REG_FIELD]
-        4 bit DEST_REG        4 bit REG1    4 bit REG2    4 bit MULT_OFFSET
+        5 bit DEST_REG        5 bit REG1
+        
+        [1 bit SHIFT    16 bit LITERAL]
+                OR
+        [5 bit REG2     5 bit SHIFT_REG     2 bit LOGICAL_OP     5 bit LOGICAL_REG]
+
+        SHIFT=1 means that the LITERAL should be placed in the upper 16-bits of DEST_REG
+
+        SHIFT_REG specifies a register whose value is applied as a signed shift to REG2
+        LOGICAL_REG is a register to AND, OR, XOR, or NAND with REG2
+        LOGICAL_OP = 00      => AND
+                   = 01      => OR
+                   = 10      => XOR
+                   = 11      => NOT_ADD         => NOTs REG2 and adds LOGICAL_REG
 
 
-LOAD_IMM16 FORMAT:
-    [1 byte instruction]
-        2 bit Opcode (01)    2 bits extended opcode (11)    4 bit DEST_REG    
+        Formula is basically:
 
-    [2 byte LITERAL]
+        DEST_REG = REG1 ~ LITERAL
 
+            OR
 
-SYSCALL INSTRUCTION FORMAT
-    [1 byte instruction]
-        2 bit Opcode (10)    2 bits extended opcode (10)    4 bit CALL_ID
-
-    [2 byte LITERAL]
-        OR
-    [2 byte REG_FIELD]
-        4 bit REG1        4 bit REG2    4 bit REG3    4 bit REG4
-
-CALL_EX INSTRUCTION FORMAT
-    [1 byte instruction]
-        2 bit Opcode (11)    6 bits FUNCTION_INDEX
-
-    [2 byte LITERAL]
-        OR
-    [2 byte REG_FIELD]
-        4 bit REG1        4 bit REG2    4 bit REG3    4 bit REG4
-
+        DEST_REG = REG1 ~ ((REG2 << SHIFT_REG) LOGICAL_OP LOGICAL_REG)
 
 CMP INSTRUCTION FORMAT
-    [1 byte instruction]
-        2 bit Opcode (10)    2 bits comparison operator (func)    4 bit DEST_REG
+    1 bit Opcode (1)    2 bits comparison operator (func)    5 bit DEST_REG
+    5 bit COMP_REG1        5 bit COMP_REG2        5 bit SELECTION_REG1    5 bit SELECTION_REG2
+    2 bit Deref_comp  2 bit Deref_dest
 
-    [2 byte REG_FIELD]
-        4 bit COMP_REG1        4 bit COMP_REG2        4 bit SELECTION_REG1    4 bit SELECTION_REG2
 
     CMP~ DEST_REG, COMP_REG1, COMP_REG2, SELECTION_REG1, SELECTION_REG2:
         if (COMP_REG1 ~ COMP_REG2) {
@@ -74,83 +97,58 @@ CMP INSTRUCTION FORMAT
             DEST_REG = SELECTION_REG2;
         }
 
+    The Dereference masks specify whether a given pair of registers should be memory-dereferenced according to the corresponding bits set.
+    Deref_comp corresponds to COMP_REG1 and COMP_REG2
+    Deref_dest corresponds to DEST_REG. This means that the corresponding bytes from the chosen SELECTION_REG will be written to the address specified by DEST_REG
+    
+    00 = No dereference
+    01 = 1 byte
+    10 = 2 bytes
+    11 = 4 bytes
+
 FMULADD INSTRUCTION FORMAT
-    [1 byte instruction]
-        2 bit Opcode (11)    3 bits extended opcode (111)    1 bit CONVERSION    2 bit SELECTOR
+    
+        2 bit Opcode (01)     1 bit CONVERSION    3 bit RECIPROCAL     3 bit INTERPRETATION     2 bit NEGATE    1 bit MODE
 
-    [2 byte REG_FIELD]
-        4 bit DEST_REG        4 bit REG1    4 bit REG2    4 bit REG3
-
-
+    
+        5 bit DEST_REG        5 bit REG1    5 bit REG2    5 bit REG3
 
 
-All data is 24-bit (3 byte) aligned
 
-19 base instructions total
+6 base instructions
+12 instruction variants total
 
 Opcode:
-    00: Arithmetic
+    0: Arithmetic
         Extension:
-            000: ADD        =>    Adds the data in REG_FIELD together and stores it in DEST_REG. If REG_FIELD_TYPE = 1, DEST_REG += LITERAL
+            000: ADD
             001: MUL        =>
             010: DIV
             011: MOD
-            100: AND
-            101: OR
-            110: XOR
-            111: FMULADD        =>    Floating Point Fused Multiply-Add
+            1xx: FMULADD        =>    Floating Point Fused Multiply-Add
                             Can perform the majority of common floating-point operations.
-                            SELECTOR bits[1,0] correspond to REG2, and REG3.
-                            If the corresponding bit is set, the reciprocal of the register is used. Otherwise, the register's original value is used. If the register is NULL, `1 is substituted.
+                            RECIPROCAL bits[2,0] correspond to REG1, REG2, and REG3.
+                            If the corresponding bit is set, the reciprocal of the register is used. Otherwise, the register's original value is used.
 
-                            If the CONVERSION bit is set, the result will be converted to an integer before being stored in DEST_REG
+                            If the CONVERSION bit is set, the result will be converted to an integer (floor) before being stored in DEST_REG
+
+                            INTERPRETATION determines whether the corresponding REG1, REG2, and REG3 are interpreted as integers and converted to floats (0) or directly interpreted bitwise as floats (1)
+
+                            NEGATE[0] means to negate REG1
+                            NEGATE[1] means to negate REG3
+
+                            MODE:
+                                0 => REG1*REG2 + REG3
+                                1 => REG1^REG2 + REG3   (exponent)
             
 
-    01: Logistic
-        Extension:
-            000: LOAD8        =>    DEST_REG = REG1 ~ REG2 :=    DEST_REG = *(REG1 + REG2)
-                =>     Loads 1 byte of data from the address specified by DEST_REG.
-                    If REG_FIELD_TYPE = 0, the address is specified by [REG1 + REG2*OFFSET].
-                    If REG_FIELD_TYPE = 1, the address is specified by the relative 
-            001: LOAD16
-            010: STORE8        =>    DEST_REG = REG1 ~ REG2    :=    *(REG1 + REG2) = DEST_REG
-            011: STORE16
-            10x: ??? (error checking maybe?)
-            11x: LOAD_IMM16        => Extra bit is used as 4th bit for DEST_REG
-
-    10: Comparison (CMP)
+    1: Comparison (CMP)
         Extension:
             00: == (CMPE)        => Sets DEST_REG to SELECTION_REG1 if COMP_REG1 == COMP_REG2 and SELECTION_REG2 if COMP_REG1 != COMP_REG2
             01: <  (CMPGU)        => Sets DEST_REG to SELECTION_REG1 if unsigned COMP_REG1 < unsigned COMP_REG2 and SELECTION_REG2 if unsigned COMP_REG1 >= unsigned COMP_REG2
             10: <  (CMPG)        => Sets DEST_REG to SELECTION_REG1 if signed COMP_REG1 < signed COMP_REG2 and SELECTION_REG2 if signed COMP_REG1 >= signed COMP_REG2
             11: FP < (FCMPG)    => Compares COMP_REG1 and COMP_REG2 via < floating-point operations
                 
-
-
-    11: System Call (SYSCALL)
-        Allows the CPU to access external (OS emulator) resources
-        xxxxxx: FUNCTION_INDEX        => Specifies the index of the predefined host function defined in the emulator's function table, with the arguments specified by REG1, REG2, REG3, and REG4.
-
-
-
-        
-
-REG_FIELD_TYPE:
-    x00    =>    DEST_REG = REG1 ~ REG2(MULT_OFFSET)
-    x01    =>    DEST_REG = REG1 ~ -REG2(MULT_OFFSET)
-    x10    =>    REG2 and MULT_OFFSET make up a 8-bit value, and DEST_REG = REG1 ~ LITERAL
-    x11    =>    REG1, REG2, and MULT_OFFSET make up a 12-bit value, and DEST_REG ~= LITERAL
-
-    0xx    =>    MULT_OFFSET/LITERAL is unsigned
-    1xx    =>    MULT_OFFSET/LITERAL is signed
-
-MULT_OFFSET:
-    A 4-bit value to multiply REG2 by before combining it with REG1 (useful for array/struct iteration)
-    The general formula is:
-        DEST_REG = REG1 ~ (REG2 * (-1)^REG_FIELD_TYPE[0] * 2^MULT_OFFSET)
-
-    NOTE: If REG2 == NULL and MULT_OFFSET != 0000, then REG2 == `1 instead
-        So 15:NULL    =>    1 << 15
 
 STACK:
     Can be used as temp assembler storage.
@@ -172,25 +170,38 @@ STACK:
 
             
 Pseudo instructions:
-    NOP                    =>    ADD NULL, NULL, NULL
+    NOP                                     =>      ADD NULL, NULL, NULL
 
-    RET                    =>    JABS STACK            =>    ADD PC, NULL, STACK
+    RET                                     =>      JABS STACK                                      =>      ADD PC, NULL, STACK
 
-    NOT <DEST_REG>, <REG>            =>    LOAD_IMM16 STACK, 0xFFFF
-                            XOR DEST_REG, DEST_REG, STACK
+    LOAD_IMM16 <DEST_REG>, <`LITERAL>       =>      ADD DEST_REG, NULL, <<`LITERAL
 
-    SUB <DEST_REG>, <REG1>, <REG2>        =>    ADD DEST_REG, REG1, -REG2
+    LOAD8 <DEST_REG>, <SRC_REG>             =>      CMPE DEST_REG, NULL, NULL, 8*SRC_REG, NULL
+    LOAD16                                  =>      CMPE DEST_REG, NULL, NULL, 16*SRC_REG, NULL
+    LOAD32                                  =>      CMPE DEST_REG, NULL, NULL, 32*SRC_REG, NULL
 
-    SUBL <DEST_REG>, <REG1>, <LITERAL>    =>    ADD DEST_REG, REG1, -LITERAL
+    STORE8                                  =>      CMPE 8*DEST_REG, NULL, NULL, SRC_REG, NULL
+    STORE16                                 =>      CMPE 16*DEST_REG, NULL, NULL, SRC_REG, NULL
+    STORE32                                 =>      CMPE 32*DEST_REG, NULL, NULL, SRC_REG, NULL
 
-    MOV <DEST_REG>, <SRC_REG>        =>    ADD DEST_REG, NULL, SRC_REG
+    AND <DEST_REG>, <REG1>, <REG2>          =>      ADD DEST_REG, NULL, REG1<<NULL & REG2
+    
+    OR <DEST_REG>, <REG1>, <REG2>           =>      ADD DEST_REG, NULL, REG1<<NULL | REG2
 
-    MOV <DEST_REG>, <LITERAL>        =>    LOAD_IMM16 DEST_REG, LITERAL
+    XOR <DEST_REG>, <REG1>, <REG2>          =>      ADD DEST_REG, NULL, REG1<<NULL ^ REG2
 
-    JREL <REG/RELATIVE_LITERAL>        =>    ADD PC, PC, REG/RELATIVE_LITERAL
+    NOT <DEST_REG>, <REG>                   =>      ADD DEST_REG, NULL, REG<<NULL ! NULL
 
-    CALL_REL <RELATIVE_LITERAL>        =>    ADD STACK, PC, 6        =>    ADD STACK, PC, 6
-                            JREL RELATIVE_LITERAL            ADD PC, PC, RELATIVE_LITERAL
+    SUB <DEST_REG>, <REG1>, <REG2>          =>      ADD DEST_REG, REG1, REG2<<NULL ! ONE
+
+    MOV <DEST_REG>, <SRC_REG>               =>      ADD DEST_REG, NULL, SRC_REG
+
+    MOV <DEST_REG>, <LITERAL>               =>      LOAD_IMM16 DEST_REG, LITERAL                      =>      ADD DEST_REG, NULL, <<`LITERAL
+
+    JREL <REG>                              =>      ADD PC, PC, REG
+
+    CALL_REL <RELATIVE_LITERAL>             =>      ADD STACK, PC, `8                                  =>    ADD STACK, PC, `8
+                                                    JREL `RELATIVE_LITERAL                                   ADD PC, PC, `RELATIVE_LITERAL
 
     CALL <ABSOLUTE_LITERAL>            =>    ADD STACK, PC, 6        =>    ADD STACK, PC, 6
                             JABS ABSOLUTE_LITERAL            LOAD_IMM16 PC, ABSOLUTE_LITERAL
@@ -212,6 +223,7 @@ Pseudo instructions:
     SLL <DEST_REG>, <REG1>, <REG2>        =>    No Equivalent
 
     SRL <DEST_REG>, <REG1>, <REG2>        =>    No Equivalent
+
 
 
     # NOTE!!!!! The below J* pseudoinstructions (including FJ*) are actually invalid as STACK is only evaluated on use.
@@ -414,33 +426,34 @@ REDUCED:
 
 
 
-EXAMPLE: Float16 Sqrt Algorithm
+EXAMPLE: Float32 Sqrt Algorithm
 .LINK "stdio.tis"    # Tells the assembler to assemble stdio.tis and link it if it has not already.
-.IMPORT :STDIO.PRINT_FLOAT16
+.IMPORT :STDIO.PRINT_FLOAT32
 
-.EXPORT :SQRTF16
+.EXPORT :SQRTF32
     # A0 = Number to square root
     # A1 = Number of iterations
 
-    LOAD_IMM16 STACK, :LOOP
-    SYSCALL 7, STACK, A1        # FILL_STACK_LITERAL, fill the STACK with 10 instances of LOOP.
+    MOV SYSTEM_IO, `7       # FILL_STACK_LITERAL
+    MOV SYSTEM_IO, :LOOP
+    MOV SYSTEM_IO, A1       # fill the STACK with 10 instances of LOOP.
 
-    MOV T0, A0                # Save original A to C
-    MOV A1, `63488            # 0b1111100000000000
+    MOV T0, A0              # Save original A0 to T0
 
     :LOOP
-    FMULADD A0, T0, `1/A0, A0        # A0 = a/x_n + x_n
-    ADD A0, A1, `1:A0            # A0 = (a/x_n + x_n)/2. Shift left by 1 to remove the sign bit and sub 1 from the 5-bit exponent. Note that this might overflow into the sign and give a negative result
-    SRL A0, A0, `1                # Restore the sign bit, inadvertently removing the negative sign.
+    FMULADD A0, T0, `1/A0, A0           # A0 = a/x_n + x_n
+    FMULADD A0, A0, `1/F:TWO, NULL      # A0 = (a/x_n + x_n)/2
 
     MOV PC, STACK
 
 .EXPORT :MAIN
-    MOV A0, `29191    # 12344.0
+    # Load float 12345.0
+    MOV A0, `58368
+    MOV_HI A0, `17984
     MOV A1, `10
-    CALL_REL :SQRTF16
-    CALL :STDIO.PRINT_FLOAT16    # Included by stdio.tis
-    SYSCALL NULL            # HALT
+    CALL_REL :SQRTF32
+    CALL :STDIO.PRINT_FLOAT32   # Included by stdio.tis
+    MOV SYSTEM_IO, NULL         # HALT
 
 
 
